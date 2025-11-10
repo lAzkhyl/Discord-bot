@@ -64,6 +64,10 @@ async def on_message(message):
         await bot.process_commands(message)
         return
     
+    if message.guild is None:
+        await bot.process_commands(message)
+        return
+    
     current_time = time.time()
     user_id = message.author.id
     
