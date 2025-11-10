@@ -57,6 +57,11 @@ def check_level_up(role_data):
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is in {len(bot.guilds)} guild(s)')
+    try:
+        synced = await bot.tree.sync()
+        print(f'Synced {len(synced)} slash command(s)')
+    except Exception as e:
+        print(f'Failed to sync slash commands: {e}')
 
 @bot.event
 async def on_message(message):
@@ -148,6 +153,43 @@ async def level_command(ctx):
     )
     
     embed.set_footer(text=f"XP Cooldown: {XP_COOLDOWN} seconds | XP per message: {XP_PER_MESSAGE}")
+    
+    await ctx.send(embed=embed)
+
+@bot.hybrid_command(name='test', description='Test command to verify the bot is working')
+async def test_command(ctx):
+    """Test command that works with both prefix (!) and slash (/)"""
+    embed = discord.Embed(
+        title="✅ Bot Test",
+        description="The bot is working perfectly!",
+        color=discord.Color.green()
+    )
+    
+    embed.add_field(
+        name="Bot Status",
+        value="🟢 Online and Ready",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="Server",
+        value=f"{ctx.guild.name if ctx.guild else 'Direct Message'}",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="Latency",
+        value=f"{round(bot.latency * 1000)}ms",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="Command Usage",
+        value="This command works with:\n• Prefix: `!test`\n• Slash: `/test`",
+        inline=False
+    )
+    
+    embed.set_footer(text=f"Requested by {ctx.author.display_name}")
     
     await ctx.send(embed=embed)
 
