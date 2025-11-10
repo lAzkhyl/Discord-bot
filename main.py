@@ -193,6 +193,227 @@ async def test_command(ctx):
     
     await ctx.send(embed=embed)
 
+@bot.hybrid_command(name='addxp', description='Add XP to a user for a specific role')
+@commands.has_permissions(administrator=True)
+async def add_xp(ctx, member: discord.Member, amount: int, role: str):
+    """Add XP to a user (Admin only)"""
+    role = role.lower()
+    if role not in ['mv', 'friends']:
+        await ctx.send("❌ Role must be either 'mv' or 'friends'", ephemeral=True)
+        return
+    
+    if amount <= 0:
+        await ctx.send("❌ Amount must be positive!", ephemeral=True)
+        return
+    
+    user_data = get_user_data(member.id)
+    role_key = "role_a" if role == "mv" else "role_b"
+    role_name = "Role MV" if role == "mv" else "Role Friends"
+    
+    old_level = user_data[role_key]["level"]
+    user_data[role_key]["xp"] += amount
+    user_data[role_key] = check_level_up(user_data[role_key])
+    
+    save_user_data(member.id, user_data)
+    
+    embed = discord.Embed(
+        title="✅ XP Added",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="User", value=member.mention, inline=True)
+    embed.add_field(name="Role", value=role_name, inline=True)
+    embed.add_field(name="XP Added", value=f"+{amount}", inline=True)
+    embed.add_field(name="New Total XP", value=user_data[role_key]["xp"], inline=True)
+    embed.add_field(name="Current Level", value=user_data[role_key]["level"], inline=True)
+    
+    if user_data[role_key]["level"] > old_level:
+        embed.add_field(name="🎉 Level Up!", value=f"Leveled up to {user_data[role_key]['level']}!", inline=False)
+    
+    await ctx.send(embed=embed)
+
+@bot.hybrid_command(name='removexp', description='Remove XP from a user for a specific role')
+@commands.has_permissions(administrator=True)
+async def remove_xp(ctx, member: discord.Member, amount: int, role: str):
+    """Remove XP from a user (Admin only)"""
+    role = role.lower()
+    if role not in ['mv', 'friends']:
+        await ctx.send("❌ Role must be either 'mv' or 'friends'", ephemeral=True)
+        return
+    
+    if amount <= 0:
+        await ctx.send("❌ Amount must be positive!", ephemeral=True)
+        return
+    
+    user_data = get_user_data(member.id)
+    role_key = "role_a" if role == "mv" else "role_b"
+    role_name = "Role MV" if role == "mv" else "Role Friends"
+    
+    user_data[role_key]["xp"] = max(0, user_data[role_key]["xp"] - amount)
+    
+    save_user_data(member.id, user_data)
+    
+    embed = discord.Embed(
+        title="✅ XP Removed",
+        color=discord.Color.orange()
+    )
+    embed.add_field(name="User", value=member.mention, inline=True)
+    embed.add_field(name="Role", value=role_name, inline=True)
+    embed.add_field(name="XP Removed", value=f"-{amount}", inline=True)
+    embed.add_field(name="New Total XP", value=user_data[role_key]["xp"], inline=True)
+    embed.add_field(name="Current Level", value=user_data[role_key]["level"], inline=True)
+    
+    await ctx.send(embed=embed)
+
+@bot.hybrid_command(name='setlevel', description='Set a user\'s level for a specific role')
+@commands.has_permissions(administrator=True)
+async def set_level(ctx, member: discord.Member, level: int, role: str):
+    """Set a user's level (Admin only)"""
+    role = role.lower()
+    if role not in ['mv', 'friends']:
+        await ctx.send("❌ Role must be either 'mv' or 'friends'", ephemeral=True)
+        return
+    
+    if level < 0:
+        await ctx.send("❌ Level must be 0 or higher!", ephemeral=True)
+        return
+    
+    user_data = get_user_data(member.id)
+    role_key = "role_a" if role == "mv" else "role_b"
+    role_name = "Role MV" if role == "mv" else "Role Friends"
+    
+    user_data[role_key]["level"] = level
+    user_data[role_key]["xp"] = 0
+    
+    save_user_data(member.id, user_data)
+    
+    embed = discord.Embed(
+        title="✅ Level Set",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="User", value=member.mention, inline=True)
+    embed.add_field(name="Role", value=role_name, inline=True)
+    embed.add_field(name="New Level", value=level, inline=True)
+    embed.add_field(name="XP Reset", value="0", inline=True)
+    
+    await ctx.send(embed=embed)
+
+@bot.hybrid_command(name='resetuser', description='Reset all progress for a user')
+@commands.has_permissions(administrator=True)
+async def reset_user(ctx, member: discord.Member):
+    """Reset a user's progress (Admin only)"""
+    user_data = {
+        "role_a": {"xp": 0, "level": 0},
+        "role_b": {"xp": 0, "level": 0}
+    }
+    
+    save_user_data(member.id, user_data)
+    
+    embed = discord.Embed(
+        title="✅ User Reset",
+        description=f"All progress has been reset for {member.mention}",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="Role MV", value="Level 0 | 0 XP", inline=True)
+    embed.add_field(name="Role Friends", value="Level 0 | 0 XP", inline=True)
+    
+    await ctx.send(embed=embed)
+
+@bot.hybrid_command(name='leaderboard', description='Show top users by level and XP')
+async def leaderboard(ctx, role: str = "mv"):
+    """Display leaderboard for a specific role"""
+    role = role.lower()
+    if role not in ['mv', 'friends']:
+        await ctx.send("❌ Role must be either 'mv' or 'friends'", ephemeral=True)
+        return
+    
+    role_key = "role_a" if role == "mv" else "role_b"
+    role_name = "Role MV" if role == "mv" else "Role Friends"
+    
+    all_users = []
+    for user_id in db.keys():
+        try:
+            user_data = json.loads(db[user_id])
+            all_users.append({
+                'id': int(user_id),
+                'level': user_data[role_key]['level'],
+                'xp': user_data[role_key]['xp']
+            })
+        except:
+            continue
+    
+    all_users.sort(key=lambda x: (x['level'], x['xp']), reverse=True)
+    top_users = all_users[:10]
+    
+    embed = discord.Embed(
+        title=f"🏆 Leaderboard - {role_name}",
+        description="Top 10 users by level and XP",
+        color=discord.Color.gold()
+    )
+    
+    if not top_users:
+        embed.description = "No users have earned XP yet!"
+    else:
+        leaderboard_text = ""
+        for idx, user_info in enumerate(top_users, 1):
+            try:
+                member = ctx.guild.get_member(user_info['id'])
+                name = member.display_name if member else f"User {user_info['id']}"
+            except:
+                name = f"User {user_info['id']}"
+            
+            medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"`{idx}.`"
+            leaderboard_text += f"{medal} **{name}** - Level {user_info['level']} ({user_info['xp']} XP)\n"
+        
+        embed.description = leaderboard_text
+    
+    embed.set_footer(text=f"Requested by {ctx.author.display_name}")
+    
+    await ctx.send(embed=embed)
+
+@bot.hybrid_command(name='rank', description='Check your rank on the leaderboard')
+async def rank(ctx, member: discord.Member = None):
+    """Check your rank or another user's rank"""
+    target = member or ctx.author
+    
+    embed = discord.Embed(
+        title=f"📊 {target.display_name}'s Rank",
+        color=discord.Color.blue()
+    )
+    
+    for role, role_key, role_name in [("mv", "role_a", "Role MV"), ("friends", "role_b", "Role Friends")]:
+        all_users = []
+        for user_id in db.keys():
+            try:
+                user_data = json.loads(db[user_id])
+                all_users.append({
+                    'id': int(user_id),
+                    'level': user_data[role_key]['level'],
+                    'xp': user_data[role_key]['xp']
+                })
+            except:
+                continue
+        
+        all_users.sort(key=lambda x: (x['level'], x['xp']), reverse=True)
+        
+        rank = None
+        for idx, user_info in enumerate(all_users, 1):
+            if user_info['id'] == target.id:
+                rank = idx
+                break
+        
+        user_data = get_user_data(target.id)
+        rank_text = f"Rank #{rank}/{len(all_users)}" if rank else "Unranked"
+        
+        embed.add_field(
+            name=f"{'🔵' if role == 'mv' else '🟢'} {role_name}",
+            value=f"{rank_text}\nLevel {user_data[role_key]['level']} | {user_data[role_key]['xp']} XP",
+            inline=True
+        )
+    
+    embed.set_thumbnail(url=target.display_avatar.url)
+    
+    await ctx.send(embed=embed)
+
 if __name__ == "__main__":
     keep_alive()
     
