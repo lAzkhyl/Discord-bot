@@ -6,8 +6,8 @@ import time
 import json
 from keep_alive import keep_alive
 
-ROLE_A_ID = 1234567890123456789
-ROLE_B_ID = 9876543210987654321
+ROLE_MV_ID = 1433114931313643681
+ROLE_FRIENDS_ID = 1433120829016899757
 
 XP_PER_MESSAGE = 15
 XP_COOLDOWN = 60
@@ -82,10 +82,10 @@ async def on_message(message):
             await bot.process_commands(message)
             return
     
-    has_role_a = any(role.id == ROLE_A_ID for role in message.author.roles)
-    has_role_b = any(role.id == ROLE_B_ID for role in message.author.roles)
+    has_role_mv = any(role.id == ROLE_MV_ID for role in message.author.roles)
+    has_role_friends = any(role.id == ROLE_FRIENDS_ID for role in message.author.roles)
     
-    if not has_role_a and not has_role_b:
+    if not has_role_mv and not has_role_friends:
         await bot.process_commands(message)
         return
     
@@ -93,21 +93,21 @@ async def on_message(message):
     
     leveled_up_roles = []
     
-    if has_role_a:
+    if has_role_mv:
         old_level = user_data["role_a"]["level"]
         user_data["role_a"]["xp"] += XP_PER_MESSAGE
         user_data["role_a"] = check_level_up(user_data["role_a"])
         
         if user_data["role_a"]["level"] > old_level:
-            leveled_up_roles.append(("Role A", user_data["role_a"]["level"]))
+            leveled_up_roles.append(("Role MV", user_data["role_a"]["level"]))
     
-    if has_role_b:
+    if has_role_friends:
         old_level = user_data["role_b"]["level"]
         user_data["role_b"]["xp"] += XP_PER_MESSAGE
         user_data["role_b"] = check_level_up(user_data["role_b"])
         
         if user_data["role_b"]["level"] > old_level:
-            leveled_up_roles.append(("Role B", user_data["role_b"]["level"]))
+            leveled_up_roles.append(("Role Friends", user_data["role_b"]["level"]))
     
     save_user_data(user_id, user_data)
     user_cooldowns[user_id] = current_time
@@ -132,23 +132,23 @@ async def level_command(ctx):
     
     embed.set_thumbnail(url=ctx.author.display_avatar.url)
     
-    role_a_data = user_data["role_a"]
-    role_a_xp_needed = xp_for_next_level(role_a_data["level"])
+    role_mv_data = user_data["role_a"]
+    role_mv_xp_needed = xp_for_next_level(role_mv_data["level"])
     embed.add_field(
-        name="🔵 Role A",
-        value=f"**Level:** {role_a_data['level']}\n"
-              f"**XP:** {role_a_data['xp']}/{role_a_xp_needed}\n"
-              f"**Progress:** {int((role_a_data['xp'] / role_a_xp_needed) * 100)}%",
+        name="🔵 Role MV",
+        value=f"**Level:** {role_mv_data['level']}\n"
+              f"**XP:** {role_mv_data['xp']}/{role_mv_xp_needed}\n"
+              f"**Progress:** {int((role_mv_data['xp'] / role_mv_xp_needed) * 100)}%",
         inline=True
     )
     
-    role_b_data = user_data["role_b"]
-    role_b_xp_needed = xp_for_next_level(role_b_data["level"])
+    role_friends_data = user_data["role_b"]
+    role_friends_xp_needed = xp_for_next_level(role_friends_data["level"])
     embed.add_field(
-        name="🟢 Role B",
-        value=f"**Level:** {role_b_data['level']}\n"
-              f"**XP:** {role_b_data['xp']}/{role_b_xp_needed}\n"
-              f"**Progress:** {int((role_b_data['xp'] / role_b_xp_needed) * 100)}%",
+        name="🟢 Role Friends",
+        value=f"**Level:** {role_friends_data['level']}\n"
+              f"**XP:** {role_friends_data['xp']}/{role_friends_xp_needed}\n"
+              f"**Progress:** {int((role_friends_data['xp'] / role_friends_xp_needed) * 100)}%",
         inline=True
     )
     
