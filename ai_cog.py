@@ -2,7 +2,8 @@ import discord
 from discord.ext import commands
 import os
 import groq
-from replit import db
+# from replit import db # <<< DIHAPUS
+import redis # <<< BARU
 import json
 import datetime
 import asyncio
@@ -21,6 +22,21 @@ else:
     print("AI Cog: WARNING!!!: GROQ_API_KEY Can't be found.")
 
 MODEL_GROQ = "llama-3.1-8b-instant"
+
+# --- REDIS CONFIGURATION ---
+try:
+    # Mengambil URL Redis dari Railway Variables (atau menggunakan default)
+    REDIS_URL = os.environ.get("REDIS_URL") 
+    
+    # Inisialisasi client Redis
+    # decode_responses=True agar kita tidak perlu manual decode byte ke string
+    r = redis.from_url(REDIS_URL, decode_responses=True) if REDIS_URL else redis.Redis(decode_responses=True)
+    r.ping() 
+    print("AI Cog: Redis client initialized successfully. Memory system ONLINE.")
+except Exception as e:
+    r = None
+    print(f"AI Cog: ERROR!!! Failed to connect to Redis. Memory system DISABLED. Error: {e}")
+
 
 # --- PERSONA TEMPLATES (MINIMALIS) ---
 DEFAULT_PERSONA = """
@@ -78,8 +94,11 @@ class AICog(commands.Cog):
 
     # --- MAIN AI FUNCTION (CONTEXT & LANGUAGE AWARE) ---
     async def panggil_ai(self, message, prompt_text):
-        COOLDOWN_TIME = 300 # 5 minutes
-        MAX_MESSAGE_LIMIT = 15
+        await message.channel.typing()
+        
+        if not groq_client:
+            await message.reply("Sorry, This bot has been disabled.")
+            return
 
         # --- LOGIC 1: HISTORY TRANSLATOR CHECK (The Specialized Agent) ---
         translation_match = re.search(r'(translate to (.*?))\s*\[(\d+)\]', prompt_text, re.IGNORECASE)
@@ -89,6 +108,9 @@ class AICog(commands.Cog):
             current_time = time.time()
             language_id = self.detect_lang(prompt_text)
 
+            COOLDOWN_TIME = 300 
+            MAX_MESSAGE_LIMIT = 15
+            
             # Cooldown Check
             if user_id in self.translator_cooldowns:
                 time_since_last = current_time - self.translator_cooldowns[user_id]
@@ -168,19 +190,14 @@ class AICog(commands.Cog):
         # --- LOGIC 2: DEFAULT RAG/PERSONA (The Core Agent) ---
         await message.channel.typing()
         
-        if not groq_client:
-            await message.reply("Sorry, This bot has been disabled.")
-            return
-
-        # Load Rails from DB (Fallback to DEFAULT_RAILS)
-        rails_str = db.get("prompt_rails", DEFAULT_RAILS) 
+        # Load Rails from DB
+        rails_str = r.get("prompt_rails") if r else DEFAULT_RAILS 
         
         # Determine Persona
         language = self.detect_lang(prompt_text)
         user_display_name = message.author.display_name
         user_id = message.author.id
 
-        # Determine Persona Content
         if language == 'id':
             persona_str = ID_PERSONA.format(user_display_name=user_display_name)
         else:
@@ -200,8 +217,8 @@ class AICog(commands.Cog):
             server_name = message.guild.name
             channel_name = message.channel.name
 
-            # RAG Memory Loading
-            user_memory_blob = db.get(f"memory_{user_id}")
+            # RAG Memory Loading (from Redis)
+            user_memory_blob = r.get(f"memory_{user_id}") if r else None
             if user_memory_blob:
                 user_memory_blob_parsed = json.loads(user_memory_blob)
                 memory_str = json.dumps(user_memory_blob_parsed.get("facts", []), indent=2) 
@@ -284,14 +301,18 @@ Known facts about {user_display_name}:
 
     @commands.hybrid_command(name='ingat', description='Store a fact about yourself in the bot\'s memory.')
     async def ingat_fakta(self, ctx, *, fakta: str):
+        if not r:
+            return await ctx.reply("❌ Memory system is offline. Please check Redis connection.", ephemeral=True)
+            
         user_id = str(ctx.author.id)
         user_data_key = f"memory_{user_id}"
         await ctx.defer(ephemeral=True)
 
         try:
-            user_memory = db.get(user_data_key)
-            if user_memory:
-                user_memory = json.loads(user_memory)
+            # Load memory
+            user_memory_raw = r.get(user_data_key)
+            if user_memory_raw:
+                user_memory = json.loads(user_memory_raw)
             else:
                 user_memory = {"facts": [], "preferences": {}}
 
@@ -311,7 +332,7 @@ Known facts about {user_display_name}:
 
             # Store fact and save
             user_memory["facts"].append(fakta_bersih)
-            db[user_data_key] = json.dumps(user_memory)
+            r.set(user_data_key, json.dumps(user_memory))
 
             embed = discord.Embed(title="✅ Fact Stored", description=f"Bot now remembers about you:\n>>> **{fakta_bersih}**", color=discord.Color.green())
             embed.set_footer(text=f"Total facts stored: {len(user_memory['facts'])}")
@@ -325,12 +346,15 @@ Known facts about {user_display_name}:
 
     @commands.hybrid_command(name='daftar_ingatan', description='View all facts stored by the bot about you.')
     async def daftar_ingatan(self, ctx):
+        if not r:
+            return await ctx.reply("❌ Memory system is offline. Please check Redis connection.", ephemeral=True)
+            
         user_id = str(ctx.author.id)
         user_data_key = f"memory_{user_id}"
 
-        user_memory = db.get(user_data_key)
-        if user_memory:
-            user_memory = json.loads(user_memory)
+        user_memory_raw = r.get(user_data_key)
+        if user_memory_raw:
+            user_memory = json.loads(user_memory_raw)
         else:
             user_memory = {"facts": []}
 
@@ -350,29 +374,33 @@ Known facts about {user_display_name}:
 
     @commands.hybrid_command(name='lupa', description='Delete a fact from the bot\'s memory by number or all.')
     async def lupa_fakta(self, ctx, nomor: str):
+        if not r:
+            return await ctx.reply("❌ Memory system is offline. Please check Redis connection.", ephemeral=True)
+
         user_id = str(ctx.author.id)
         user_data_key = f"memory_{user_id}"
 
         if nomor.lower() == 'semua':
-            db.delete(user_data_key)
-            return await ctx.reply("✅ SUCCESS! All memory about you has been wiped. Bot is now completely amnesiac.", ephemeral=True)
+            r.delete(user_data_key)
+            return await ctx.reply("✅ SUKSES! All memory about you has been wiped. Bot is now completely amnesiac.", ephemeral=True)
 
         try:
-            nomor_index = int(nomor) - 1
+            nomor_index = int(nomor) - 1 
         except ValueError:
             return await ctx.reply("❌ Enter a valid fact number (e.g., 1, 2, 3) or the word 'semua'.", ephemeral=True)
 
-        user_memory = db.get(user_data_key)
-        if user_memory:
-            user_memory = json.loads(user_memory)
+        user_memory_raw = r.get(user_data_key)
+        if user_memory_raw:
+            user_memory = json.loads(user_memory_raw)
         else:
             user_memory = {"facts": []}
 
         if not user_memory.get("facts") or nomor_index < 0 or nomor_index >= len(user_memory["facts"]):
             return await ctx.reply(f"❌ Fact number '{nomor}' is invalid. Check `/daftar_ingatan` for available numbers.", ephemeral=True)
 
+        # Hapus fakta dan simpan kembali
         fakta_terlupa = user_memory["facts"].pop(nomor_index)
-        db[user_data_key] = json.dumps(user_memory)
+        r.set(user_data_key, json.dumps(user_memory))
 
         embed = discord.Embed(
             title="🗑️ Fact Deleted",
@@ -386,10 +414,13 @@ Known facts about {user_display_name}:
     @commands.hybrid_command(name='setup_persona', description='(Admin) Sets up core safety rails for the bot.')
     @commands.has_permissions(administrator=True)
     async def setup_persona(self, ctx):
+        if not r:
+            return await ctx.reply("❌ Memory system is offline. Please check Redis connection.", ephemeral=True)
+            
         await ctx.defer(ephemeral=True) 
 
         try:
-            db["prompt_rails"] = DEFAULT_RAILS
+            r.set("prompt_rails", DEFAULT_RAILS)
             await ctx.reply("✅ SUCCESS! Core safety rails have been setup.", ephemeral=True)
 
         except Exception as e:
