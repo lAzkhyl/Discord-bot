@@ -2,8 +2,7 @@ import discord
 from discord.ext import commands
 import os
 import groq
-# from replit import db # <<< DIHAPUS
-import redis # <<< BARU
+import redis
 import json
 import datetime
 import asyncio
@@ -25,11 +24,7 @@ MODEL_GROQ = "llama-3.1-8b-instant"
 
 # --- REDIS CONFIGURATION ---
 try:
-    # Mengambil URL Redis dari Railway Variables (atau menggunakan default)
     REDIS_URL = os.environ.get("REDIS_URL") 
-    
-    # Inisialisasi client Redis
-    # decode_responses=True agar kita tidak perlu manual decode byte ke string
     r = redis.from_url(REDIS_URL, decode_responses=True) if REDIS_URL else redis.Redis(decode_responses=True)
     r.ping() 
     print("AI Cog: Redis client initialized successfully. Memory system ONLINE.")
@@ -94,13 +89,10 @@ class AICog(commands.Cog):
 
     # --- MAIN AI FUNCTION (CONTEXT & LANGUAGE AWARE) ---
     async def panggil_ai(self, message, prompt_text):
-        await message.channel.typing()
-        
-        if not groq_client:
-            await message.reply("Sorry, This bot has been disabled.")
-            return
+        COOLDOWN_TIME = 300 # 5 minutes
+        MAX_MESSAGE_LIMIT = 15
 
-        # --- LOGIC 1: HISTORY TRANSLATOR CHECK (The Specialized Agent) ---
+        # --- LOGIC 1: HISTORY TRANSLATOR CHECK ---
         translation_match = re.search(r'(translate to (.*?))\s*\[(\d+)\]', prompt_text, re.IGNORECASE)
 
         if translation_match:
@@ -108,9 +100,6 @@ class AICog(commands.Cog):
             current_time = time.time()
             language_id = self.detect_lang(prompt_text)
 
-            COOLDOWN_TIME = 300 
-            MAX_MESSAGE_LIMIT = 15
-            
             # Cooldown Check
             if user_id in self.translator_cooldowns:
                 time_since_last = current_time - self.translator_cooldowns[user_id]
@@ -180,8 +169,8 @@ class AICog(commands.Cog):
                 )
                 await message.reply(embed=embed)
                 
-                self.translator_cooldowns[user_id] = current_time # Update cooldown
-                return # Exit panggil_ai
+                self.translator_cooldowns[user_id] = current_time 
+                return 
 
             except Exception as e:
                 await message.reply(f"Sorry, translation failed. Error: {e}")
@@ -190,6 +179,10 @@ class AICog(commands.Cog):
         # --- LOGIC 2: DEFAULT RAG/PERSONA (The Core Agent) ---
         await message.channel.typing()
         
+        if not groq_client:
+            await message.reply("Sorry, This bot has been disabled.")
+            return
+
         # Load Rails from DB
         rails_str = r.get("prompt_rails") if r else DEFAULT_RAILS 
         
@@ -210,6 +203,7 @@ class AICog(commands.Cog):
         else:
             rails_str = rails_str.replace("Waduh, gw gak bisa liat isi chat langsung, lu harus bilang apa yang gw perlu tau.\" (ID) OR \"", "")
             rails_str = rails_str.replace("Waduh, mata gue masih analog, cik. Nggak bisa liat gambar. Ceritain aja isinya apa.\" (ID) OR \"", "")
+
 
         try:
             # Context Assembly
@@ -258,17 +252,34 @@ Known facts about {user_display_name}:
                 rails_str=rails_str
             )
 
-            # Message Payload (Reply Context)
+            # --- Message Payload (FIXED Reply Context) ---
             messages_payload = [
                 {"role": "system", "content": system_prompt}
             ]
 
             if message.reference and message.reference.resolved:
                 original_message = message.reference.resolved
-                if not original_message.author.bot:
+                
+                # NEW FIX: Handle replies to the bot to prevent leakage
+                if original_message.author.bot:
+                    # Check if the bot's original message is a default greeting or a leak
+                    if original_message.content.startswith("Hello! What can I help you with?") or \
+                       original_message.content.startswith("Saya siap membantu"):
+                        # If user replies to a greeting, ignore the greeting context
+                        pass
+                    else:
+                        # If it's a real conversation, add it as 'assistant' history
+                        messages_payload.append({
+                            "role": "assistant",
+                            "content": original_message.content
+                        })
+                
+                # If replying to another user
+                elif not original_message.author.bot: 
                     original_author = original_message.author.display_name
                     original_content = original_message.content
                     messages_payload.append({"role": "user", "content": f"[Context from '{original_author}']: \"{original_content}\""})
+
             
             messages_payload.append({"role": "user", "content": prompt_text})
 
@@ -286,7 +297,6 @@ Known facts about {user_display_name}:
                 await message.reply("Sorry, the AI returned an empty response.")
                 return
 
-            # SIMPLE RESPONSE (No Splitting)
             await message.reply(response_text)
 
         except groq.RateLimitError:
@@ -309,7 +319,6 @@ Known facts about {user_display_name}:
         await ctx.defer(ephemeral=True)
 
         try:
-            # Load memory
             user_memory_raw = r.get(user_data_key)
             if user_memory_raw:
                 user_memory = json.loads(user_memory_raw)
@@ -330,7 +339,6 @@ Known facts about {user_display_name}:
             )
             fakta_bersih = chat_completion.choices[0].message.content.strip().replace('"', '')
 
-            # Store fact and save
             user_memory["facts"].append(fakta_bersih)
             r.set(user_data_key, json.dumps(user_memory))
 
@@ -382,7 +390,7 @@ Known facts about {user_display_name}:
 
         if nomor.lower() == 'semua':
             r.delete(user_data_key)
-            return await ctx.reply("✅ SUKSES! All memory about you has been wiped. Bot is now completely amnesiac.", ephemeral=True)
+            return await ctx.reply("✅ SUCCESS! All memory about you has been wiped. Bot is now completely amnesiac.", ephemeral=True)
 
         try:
             nomor_index = int(nomor) - 1 
@@ -398,7 +406,6 @@ Known facts about {user_display_name}:
         if not user_memory.get("facts") or nomor_index < 0 or nomor_index >= len(user_memory["facts"]):
             return await ctx.reply(f"❌ Fact number '{nomor}' is invalid. Check `/daftar_ingatan` for available numbers.", ephemeral=True)
 
-        # Hapus fakta dan simpan kembali
         fakta_terlupa = user_memory["facts"].pop(nomor_index)
         r.set(user_data_key, json.dumps(user_memory))
 
@@ -446,6 +453,8 @@ Known facts about {user_display_name}:
                 await self.panggil_ai(message, "Hello! What can I help you with?") 
                 return
             elif not prompt_text and is_reply_to_bot:
+                # If user just replies to bot with no text (e.g., an emoji), 
+                # we can ignore it to prevent accidental loops or spam.
                 return 
 
             await self.panggil_ai(message, prompt_text)
