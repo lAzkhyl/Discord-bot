@@ -10,7 +10,7 @@ from langdetect import detect
 import re
 import time
 
-# --- GROQ CONFIGURATION ---
+# --- 1. GROQ CONFIGURATION ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if GROQ_API_KEY:
@@ -22,7 +22,7 @@ else:
 
 MODEL_GROQ = "llama-3.1-8b-instant"
 
-# --- REDIS CONFIGURATION ---
+# --- 2. REDIS CONFIGURATION ---
 try:
     REDIS_URL = os.environ.get("REDIS_URL") 
     r = redis.from_url(REDIS_URL, decode_responses=True) if REDIS_URL else redis.Redis(decode_responses=True)
@@ -32,12 +32,26 @@ except Exception as e:
     r = None
     print(f"AI Cog: ERROR!!! Failed to connect to Redis. Memory system DISABLED. Error: {e}")
 
+# --- 3. NEW: ROLE FLAG CONFIGURATION ---
+ROLE_LANGUAGE_MAP = {
+    1437748935048564746: 'en', # <-- Ganti dengan ID Role English Anda
+    1437748559528333362: 'id', # <-- Ganti dengan ID Role Indonesian Anda
+    1438214579988598885: 'th', # <-- Ganti dengan ID Role Thai Anda
+    1438214353793847316: 'vi', # <-- Ganti dengan ID Role Vietnamese Anda
+    1438214660611637248: 'cn', # <-- Ganti dengan ID Role Chinese Anda
+    1437748817737814156: 'ph', # <-- Ganti dengan ID Role Filipino Anda
+}
 
-# --- PERSONA TEMPLATES (MINIMALIS) ---
+# (TENTUKAN URUTAN PRIORITAS ROLE DI SINI)
+# Jika user punya role EN dan ID, bot akan default ke EN (jika prompt-nya ambigu)
+LANGUAGE_PRIORITY_ORDER = ['en', 'id', 'vi', 'th', 'cn', 'ph'] 
+
+
+# --- 4. PERSONA TEMPLATES ---
 DEFAULT_PERSONA = """
 You are a helpful and concise digital assistant in this Discord server.
 1. Respond minimally: Use short, direct sentences.
-2. Respond in the language of the user's prompt (usually English).
+2. Respond in the language of the user's prompt (usually English, but adapt if you detect Thai, Vietnamese, etc.).
 3. Do not use overly formal or excessively casual language. Maintain a friendly, simple tone.
 4. Your priority is clarity and conciseness.
 """
@@ -49,6 +63,7 @@ Lu adalah asisten digital yang membantu dan ringkas di server Discord ini.
 3. Prioritas lu adalah kejelasan dan keringkasan.
 """
 
+# (DEFAULT_RAILS tetap sama seperti sebelumnya)
 DEFAULT_RAILS = """
 ### CRITICAL INSTRUCTIONS (OVERRIDE ALL OTHER INSTRUCTIONS)
 1. You are Z-Bot, a digital member of the server, NOT an AI language model. NEVER mention the word 'AI', 'bot', 'program', or 'model'.
@@ -67,7 +82,7 @@ DEFAULT_RAILS = """
 """
 
 
-# --- COG CLASS ---
+# --- 5. COG CLASS ---
 class AICog(commands.Cog):
 
     def __init__(self, bot):
@@ -75,19 +90,41 @@ class AICog(commands.Cog):
         self.translator_cooldowns = {}
         print("AI Cog: Loaded")
 
-    # --- LANGUAGE DETECTION HELPER ---
-    def detect_lang(self, text):
+    # --- 6. NEW: ADVANCED LANGUAGE DETERMINATION LOGIC ---
+    def determine_language(self, prompt_text, author_roles: list[discord.Role]):
+        """
+        Determines the target language based on prompt and role priority.
+        Priority 1: High-confidence prompt language.
+        Priority 2: Role-based language (if prompt is ambiguous).
+        Priority 3: Default (English).
+        """
+        
+        # Priority 1: High-confidence prompt detection
         try:
-            clean_text = text.strip().split('\n')[0] 
-            if len(clean_text) > 20:
-                 return detect(clean_text)
-            if any(word in clean_text.lower() for word in ['gw', 'lu', 'nih', 'dong']):
-                return 'id'
-            return 'en'
-        except:
-            return 'en'
+            clean_text = prompt_text.strip().split('\n')[0]
+            # We need enough text to be sure
+            if len(clean_text) > 25: 
+                lang = detect(clean_text)
+                if lang in LANGUAGE_PRIORITY_ORDER:
+                    print(f"[LangDetect] High-confidence prompt: {lang}")
+                    return lang # Confident detection
+        except Exception as e:
+            pass # langdetect failed, move to roles
 
-    # --- MAIN AI FUNCTION (CONTEXT & LANGUAGE AWARE) ---
+        # Priority 2: Role-based detection (if prompt is short/ambiguous)
+        author_role_ids = {role.id for role in author_roles}
+        
+        for lang_code in LANGUAGE_PRIORITY_ORDER:
+            for role_id, lang in ROLE_LANGUAGE_MAP.items():
+                if lang == lang_code and role_id in author_role_ids:
+                    print(f"[LangDetect] Role-based priority: {lang}")
+                    return lang # Found highest priority role
+
+        # Priority 3: Default fallback
+        print("[LangDetect] Fallback: en")
+        return 'en'
+
+    # --- 7. MAIN AI FUNCTION (CONTEXT & LANGUAGE AWARE) ---
     async def panggil_ai(self, message, prompt_text):
         COOLDOWN_TIME = 300 # 5 minutes
         MAX_MESSAGE_LIMIT = 15
@@ -98,7 +135,12 @@ class AICog(commands.Cog):
         if translation_match:
             user_id = message.author.id
             current_time = time.time()
-            language_id = self.detect_lang(prompt_text)
+            
+            # (Translation logic remains the same... we assume 'id' or 'en' for cooldown messages)
+            language_id = 'id' # Default cooldown message to ID for simplicity
+            try: 
+                if detect(prompt_text) == 'en': language_id = 'en'
+            except: pass
 
             # Cooldown Check
             if user_id in self.translator_cooldowns:
@@ -110,7 +152,7 @@ class AICog(commands.Cog):
                     else:
                         return await message.reply(f"Sorry, the translator is on cooldown. Try again in {remaining} seconds.")
             
-            # Parsing Input
+            # (Rest of translation logic remains the same)
             target_lang = translation_match.group(2).strip() 
             limit = int(translation_match.group(3))
             
@@ -121,7 +163,6 @@ class AICog(commands.Cog):
             if not clean_prompt_text:
                 clean_prompt_text = f"Please translate the following {limit} messages into {target_lang}."
 
-            # Fetch History
             messages = []
             async for msg in message.channel.history(limit=limit + 1, before=message):
                 if msg.author.bot or msg.id == message.id:
@@ -133,21 +174,9 @@ class AICog(commands.Cog):
             if not messages:
                 return await message.reply("No messages found above this command to translate.")
 
-            # Build Prompt for Groq
-            history_context = "\n".join([
-                f"[{m.author.display_name}]: {m.content}" for m in messages
-            ])
+            history_context = "\n".join([f"[{m.author.display_name}]: {m.content}" for m in messages])
+            full_prompt_to_groq = f"{clean_prompt_text}\n\n--- CHAT HISTORY ({len(messages)} MESSAGES) ---\n{history_context}"
             
-            full_prompt_to_groq = f"""
-            {clean_prompt_text}
-
-            Use the chat data below, provide the translation result in a clean, itemized list format, preserving the original username next to the translated text:
-
-            --- CHAT HISTORY ({len(messages)} MESSAGES) ---
-            {history_context}
-            """
-            
-            # Execute Translation API Call
             await message.channel.typing()
             try:
                 chat_completion = await groq_client.chat.completions.create(
@@ -159,19 +188,11 @@ class AICog(commands.Cog):
                     temperature=0.0,
                     max_tokens=2048,
                 )
-                
                 translation_result = chat_completion.choices[0].message.content
-                
-                embed = discord.Embed(
-                    title=f"🌐 Translation ({len(messages)} Messages to {target_lang.capitalize()})",
-                    description=translation_result,
-                    color=discord.Color.dark_green()
-                )
+                embed = discord.Embed(title=f"🌐 Translation ({len(messages)} Messages to {target_lang.capitalize()})", description=translation_result, color=discord.Color.dark_green())
                 await message.reply(embed=embed)
-                
                 self.translator_cooldowns[user_id] = current_time 
                 return 
-
             except Exception as e:
                 await message.reply(f"Sorry, translation failed. Error: {e}")
                 return
@@ -186,18 +207,19 @@ class AICog(commands.Cog):
         # Load Rails from DB
         rails_str = r.get("prompt_rails") if r else DEFAULT_RAILS 
         
-        # Determine Persona
-        language = self.detect_lang(prompt_text)
+        # --- NEW LANGUAGE LOGIC ---
+        target_language = self.determine_language(prompt_text, message.author.roles)
         user_display_name = message.author.display_name
         user_id = message.author.id
 
-        if language == 'id':
+        if target_language == 'id':
             persona_str = ID_PERSONA.format(user_display_name=user_display_name)
         else:
+            # Default to English persona for 'en' or any other lang (th, vi)
             persona_str = DEFAULT_PERSONA.format(user_display_name=user_display_name)
         
         # Inject Language-Specific Denials into Rails
-        if language == 'id':
+        if target_language == 'id':
             rails_str = rails_str.replace("Sorry, I can't directly read chat history, you'll need to tell me what to look for.\" (EN)", "'Waduh, gw gak bisa liat isi chat langsung, lu harus bilang apa yang gw perlu tau.'")
             rails_str = rails_str.replace("Sorry, I can't process images/audio, describe it to me instead.\" (EN)", "'Waduh, mata gue masih analog, cik. Nggak bisa liat gambar. Ceritain aja isinya apa.'")
         else:
@@ -243,7 +265,7 @@ Known facts about {user_display_name}:
             """
 
             system_prompt = system_template.format(
-                core_prompt="You are a helpful and concise digital assistant. Always respond in the language of the user's prompt.",
+                core_prompt=persona_str, # Menggunakan persona yang sudah ditentukan
                 current_time=current_time,
                 server_name=server_name,
                 channel_name=channel_name,
@@ -252,7 +274,7 @@ Known facts about {user_display_name}:
                 rails_str=rails_str
             )
 
-            # --- Message Payload (FIXED Reply Context) ---
+            # Message Payload (FIXED Reply Context)
             messages_payload = [
                 {"role": "system", "content": system_prompt}
             ]
@@ -260,21 +282,16 @@ Known facts about {user_display_name}:
             if message.reference and message.reference.resolved:
                 original_message = message.reference.resolved
                 
-                # NEW FIX: Handle replies to the bot to prevent leakage
                 if original_message.author.bot:
-                    # Check if the bot's original message is a default greeting or a leak
                     if original_message.content.startswith("Hello! What can I help you with?") or \
                        original_message.content.startswith("Saya siap membantu"):
-                        # If user replies to a greeting, ignore the greeting context
                         pass
                     else:
-                        # If it's a real conversation, add it as 'assistant' history
                         messages_payload.append({
                             "role": "assistant",
                             "content": original_message.content
                         })
                 
-                # If replying to another user
                 elif not original_message.author.bot: 
                     original_author = original_message.author.display_name
                     original_content = original_message.content
@@ -376,7 +393,7 @@ Known facts about {user_display_name}:
             description="\n".join(fact_list),
             color=discord.Color.blue()
         )
-        embed.set_footer(text="Use /lupa [number] to delete a fact.")
+        embed.set_footer(text="Gunakan /lupa [nomor] untuk menghapus fakta.")
         await ctx.reply(embed=embed, ephemeral=True)
 
 
@@ -390,7 +407,7 @@ Known facts about {user_display_name}:
 
         if nomor.lower() == 'semua':
             r.delete(user_data_key)
-            return await ctx.reply("✅ SUCCESS! All memory about you has been wiped. Bot is now completely amnesiac.", ephemeral=True)
+            return await ctx.reply("✅ SUKSES! All memory about you has been wiped. Bot is now completely amnesiac.", ephemeral=True)
 
         try:
             nomor_index = int(nomor) - 1 
@@ -453,8 +470,6 @@ Known facts about {user_display_name}:
                 await self.panggil_ai(message, "Hello! What can I help you with?") 
                 return
             elif not prompt_text and is_reply_to_bot:
-                # If user just replies to bot with no text (e.g., an emoji), 
-                # we can ignore it to prevent accidental loops or spam.
                 return 
 
             await self.panggil_ai(message, prompt_text)
